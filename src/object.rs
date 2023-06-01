@@ -1,28 +1,39 @@
 use std::rc::Rc;
 
+use crate::material::*;
 use crate::ray::Ray;
 use glam::Vec3;
 
 type Point = Vec3;
 
-#[derive(Clone, Copy)]
-struct HitRecord {
-    point: Point,
-    normal: Vec3,
-    t: f32,
-    front_face: bool,
+#[derive(Clone)]
+pub struct HitRecord {
+    pub point: Point,
+    pub normal: Vec3,
+    pub material: Rc<dyn Material>,
+    pub t: f32,
+    pub front_face: bool,
 }
 
 impl HitRecord {
-    fn default() -> Self {
-        HitRecord {
-            point: Vec3::new(0.0, 0.0, 0.0),
+    pub fn new(
+        point: Point,
+        material: Rc<dyn Material>,
+        outward_normal: Vec3,
+        t: f32,
+        ray: Ray,
+    ) -> Self {
+        let mut s = HitRecord {
+            point,
             normal: Vec3::new(0.0, 0.0, 0.0),
-            t: 0.0,
-            front_face: true,
-        }
+            material,
+            t,
+            front_face: false,
+        };
+        s.set_face_normal(ray, outward_normal);
+        s
     }
-    fn set_face_normal(mut self, ray: Ray, outward_normal: Vec3) {
+    pub fn set_face_normal(&mut self, ray: Ray, outward_normal: Vec3) {
         self.front_face = ray.direction.dot(outward_normal) < 0.0;
         self.normal = match self.front_face {
             true => outward_normal,
@@ -31,82 +42,82 @@ impl HitRecord {
     }
 }
 
-trait Object {
-    fn hit(self: Rc<Self>, ray: Ray, t_min: f32, t_max: f32, record: &mut HitRecord) -> bool;
+pub trait Object {
+    fn hit(&self, ray: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord>;
 }
 
-struct ObjectList {
-    objects: Vec<Rc<dyn Object>>,
+pub struct ObjectList {
+    pub objects: Vec<Rc<dyn Object>>,
 }
+
+unsafe impl Send for ObjectList {}
+unsafe impl Sync for ObjectList {}
 
 impl ObjectList {
-    fn new(object: Rc<dyn Object>) -> Self {
-        ObjectList {
-            objects: vec![object],
-        }
+    pub fn new(objects: Vec<Rc<dyn Object>>) -> Self {
+        ObjectList { objects }
     }
-    fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.objects.clear();
     }
-    fn add(&mut self, object: Rc<dyn Object>) {
+    pub fn add(&mut self, object: Rc<dyn Object>) {
         self.objects.push(object);
     }
 }
 
 impl Object for ObjectList {
-    fn hit(self: Rc<Self>, ray: Ray, t_min: f32, t_max: f32, record: &mut HitRecord) -> bool {
-        let mut temp_record = HitRecord::default();
-
-        let mut hit_anything = false;
+    fn hit(&self, ray: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
         let mut closest = t_max;
+        let mut hit: Option<HitRecord> = None;
 
         for object in self.objects.iter() {
-            if object.clone().hit(ray, t_min, closest, &mut temp_record) {
-                hit_anything = true;
-                closest = temp_record.t;
-                *record = temp_record;
+            if let Some(rec) = object.hit(ray, t_min, closest) {
+                closest = rec.t;
+                hit = Some(rec);
             }
         }
-        hit_anything
+        hit
     }
 }
 
-struct Sphere {
+pub struct Sphere {
     center: Point,
     radius: f32,
+    material: Rc<dyn Material>,
 }
 
 impl Sphere {
-    fn new(center: Point, radius: f32) -> Self {
-        Sphere { center, radius }
+    pub fn new(center: Point, radius: f32, material: Rc<dyn Material>) -> Self {
+        Sphere {
+            center,
+            radius,
+            material,
+        }
     }
 }
 
 impl Object for Sphere {
-    fn hit(self: Rc<Self>, ray: Ray, t_min: f32, t_max: f32, mut record: &mut HitRecord) -> bool {
-        let oc: Vec3 = ray.origin - self.center;
-        let a = ray.direction.length_squared();
-        let half_b = oc.dot(ray.direction);
-        let c = oc.length_squared() - self.radius.powi(2);
-
-        let discriminant = half_b.powi(2) - a * c;
-        if discriminant < 0.0 {
-            return false;
-        }
-        let sqrt_disc = discriminant.sqrt();
-        let mut root = (-half_b - sqrt_disc) / a;
-        if root < t_min || t_max > root {
-            root = (-half_b + sqrt_disc) / a;
-            if root < t_min || t_max > root {
-                return false;
+    fn hit(&self, ray: &Ray, t_min: f32, t_max: f32) -> Option<HitRecord> {
+        let oc = ray.origin - self.center;
+        let a = ray.direction.dot(ray.direction);
+        let b = oc.dot(ray.direction);
+        let c = oc.dot(oc) - self.radius.powi(2);
+        let discriminant = b.powi(2) - a * c;
+        if discriminant > 0.0 {
+            let sqrt_discriminant = discriminant.sqrt();
+            let t = (-b - sqrt_discriminant) / a;
+            if t < t_max && t > t_min {
+                let p = ray.at(t);
+                let normal = (p - self.center) / self.radius;
+                return Some(HitRecord::new(p, self.material.clone(), normal, t, *ray));
+            }
+            let t = (-b + sqrt_discriminant) / a;
+            if t < t_max && t > t_min {
+                let p = ray.at(t);
+                let normal = (p - self.center) / self.radius;
+                return Some(HitRecord::new(p, self.material.clone(), normal, t, *ray));
             }
         }
-
-        record.t = root;
-        record.point = ray.at(record.t);
-        let outward_normal = (record.point - self.center) / self.radius;
-        record.set_face_normal(ray, outward_normal);
-
-        true
+        None
     }
 }
