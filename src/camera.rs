@@ -1,10 +1,11 @@
-use glam::Vec3;
+pub(crate) use glam::Vec3;
 
 use crate::{
     ray::Ray,
     util::{degrees_to_radians, random_in_unit_disk},
 };
 
+#[derive(Clone)]
 pub struct Camera {
     origin: Vec3,
     lower_left_corner: Vec3,

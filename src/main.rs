@@ -9,6 +9,8 @@ use image::Rgb;
 use object::*;
 use rand::random;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::thread;
 
 mod camera;
 mod material;
@@ -39,32 +41,49 @@ fn main() -> image::ImageResult<()> {
         focus_distance,
     );
 
-    let world = random_scene();
-
-    //let mut f = File::create("output.ppm")?;
-
-    // f.write_all(format!("P3\n{} {}\n255\n", WIDTH, HEIGHT).as_bytes())?;
+    let world = Arc::new(random_scene());
 
     let mut image: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::new(WIDTH, HEIGHT);
 
-    for (i, (x, y, pixel)) in image.enumerate_pixels_mut().enumerate() {
-        print!("\x1B[2J");
-        println!(
-            "RENDER PROGRESS:\n{:.2}% ({} out of {} pixels)",
-            (i as f64 / (WIDTH * HEIGHT) as f64) * 100.0,
-            i,
-            WIDTH * HEIGHT
-        );
+    let mut threadpool = Vec::new();
 
-        let mut color: Color = Vec3::new(0.0, 0.0, 0.0);
-        for _ in 0..SAMPLES_PER_PIXEL {
-            let u = (x as f32 + random::<f32>()) / (WIDTH - 1) as f32;
-            let v = ((HEIGHT - y) as f32 + random::<f32>()) / (HEIGHT - 1) as f32;
-            let ray = camera.get_ray(u, v);
-            color += color_ray(&ray, &world, MAX_DEPTH);
+    let imagevec: Vec<(usize, (u32, u32, &Rgb<u8>))> =
+        image.enumerate_pixels().enumerate().collect();
+
+    let imageparts = imagevec.chunks(10);
+
+    for (i, chunk) in imageparts.enumerate() {
+        let threadworld = world.clone();
+        let threadcamera = camera.clone();
+        println!("Initializing render task {}", i);
+        threadpool.push(thread::spawn(move || {
+            let mut output = Vec::new();
+            for (i, (x, y, _)) in chunk.into_iter() {
+                let mut color: Color = Vec3::new(0.0, 0.0, 0.0);
+                for _ in 0..SAMPLES_PER_PIXEL {
+                    let u = (*x as f32 + random::<f32>()) / (WIDTH - 1) as f32;
+                    let v = ((HEIGHT - y) as f32 + random::<f32>()) / (HEIGHT - 1) as f32;
+                    let ray = threadcamera.get_ray(u, v);
+                    color += color_ray(&ray, threadworld.clone(), MAX_DEPTH);
+                }
+                output.push((color, (*x, *y, *i)));
+            }
+            output
+        }));
+    }
+
+    for thread in threadpool {
+        for (color, (x, y, total)) in thread.join().unwrap().into_iter() {
+            print!("\x1B[2J");
+            println!(
+                "RENDER PROGRESS:\n{:.2}% ({} out of {} pixels)",
+                (total as f64 / (WIDTH * HEIGHT) as f64) * 100.0,
+                total,
+                WIDTH * HEIGHT
+            );
+            let pixel = image.get_pixel_mut(x, y);
+            write_color(color, pixel, SAMPLES_PER_PIXEL);
         }
-
-        write_color(color, pixel, SAMPLES_PER_PIXEL);
     }
 
     image.save("output.png")?;
@@ -73,15 +92,14 @@ fn main() -> image::ImageResult<()> {
 
     Ok(())
 }
-fn color_ray<O: Object>(r: &Ray, world: &O, depth: u32) -> Color {
-    if depth <= 0 {
+fn color_ray<O: Object>(r: &Ray, world: Arc<O>, depth: u32) -> Color {
+    if depth == 0 {
         return Vec3::new(0.0, 0.0, 0.0);
     }
     if let Some(hit) = world.hit(r, 0.001, f32::INFINITY) {
-        if let Some((ray, attenuation)) = hit.material.scatter(&r, &hit) {
-            attenuation * color_ray(&ray, world, depth - 1)
-        } else {
-            Vec3::new(0.0, 0.0, 0.0)
+        match hit.material.scatter(r, &hit) {
+            Some((ray, attenuation)) => attenuation * color_ray(&ray, world, depth - 1),
+            None => Vec3::new(0.0, 0.0, 0.0),
         }
     } else {
         let unit: Vec3 = r.direction.normalize();
