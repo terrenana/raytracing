@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use crate::camera::Camera;
 use crate::material::*;
 use crate::object::ObjectList;
@@ -8,9 +10,6 @@ use image::ImageBuffer;
 use image::Rgb;
 use object::*;
 use rand::random;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::thread;
 
 mod camera;
 mod material;
@@ -20,7 +19,7 @@ mod util;
 
 // IMAGE
 const ASPECT_RATIO: f32 = 3.0 / 2.0;
-const WIDTH: u32 = 1400;
+const WIDTH: u32 = 200;
 const HEIGHT: u32 = (WIDTH as f32 / ASPECT_RATIO) as u32;
 const SAMPLES_PER_PIXEL: u32 = 500;
 const MAX_DEPTH: u32 = 50;
@@ -41,47 +40,24 @@ fn main() -> image::ImageResult<()> {
         focus_distance,
     );
 
-    let world = Arc::new(random_scene());
+    let world = random_scene();
 
     let mut image: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::new(WIDTH, HEIGHT);
 
-    let mut threadpool = Vec::new();
-
-    let imagevec: Vec<(usize, (u32, u32, &Rgb<u8>))> =
-        image.enumerate_pixels().enumerate().collect();
-
-    let imageparts = imagevec.chunks(10);
-
-    for (i, chunk) in imageparts.enumerate() {
-        let threadworld = world.clone();
-        let threadcamera = camera.clone();
-        println!("Initializing render task {}", i);
-        threadpool.push(thread::spawn(move || {
-            let mut output = Vec::new();
-            for (i, (x, y, _)) in chunk.into_iter() {
-                let mut color: Color = Vec3::new(0.0, 0.0, 0.0);
-                for _ in 0..SAMPLES_PER_PIXEL {
-                    let u = (*x as f32 + random::<f32>()) / (WIDTH - 1) as f32;
-                    let v = ((HEIGHT - y) as f32 + random::<f32>()) / (HEIGHT - 1) as f32;
-                    let ray = threadcamera.get_ray(u, v);
-                    color += color_ray(&ray, threadworld.clone(), MAX_DEPTH);
-                }
-                output.push((color, (*x, *y, *i)));
-            }
-            output
-        }));
-    }
-
-    for thread in threadpool {
-        for (color, (x, y, total)) in thread.join().unwrap().into_iter() {
-            print!("\x1B[2J");
-            println!(
-                "RENDER PROGRESS:\n{:.2}% ({} out of {} pixels)",
-                (total as f64 / (WIDTH * HEIGHT) as f64) * 100.0,
-                total,
-                WIDTH * HEIGHT
-            );
-            let pixel = image.get_pixel_mut(x, y);
+    for (i, (x, y, pixel)) in image.enumerate_pixels_mut().enumerate() {
+        print!("\x1B[2J");
+        println!(
+            "RENDER PROGRESS:\n{:.2}% ({} out of {} pixels)",
+            (i as f64 / (WIDTH * HEIGHT) as f64) * 100.0,
+            i,
+            WIDTH * HEIGHT
+        );
+        let mut color: Color = Vec3::new(0.0, 0.0, 0.0);
+        for _ in 0..SAMPLES_PER_PIXEL {
+            let u = (x as f32 + random::<f32>()) / (WIDTH - 1) as f32;
+            let v = ((HEIGHT - y) as f32 + random::<f32>()) / (HEIGHT - 1) as f32;
+            let ray = camera.get_ray(u, v);
+            color += color_ray(&ray, &world, MAX_DEPTH);
             write_color(color, pixel, SAMPLES_PER_PIXEL);
         }
     }
@@ -92,7 +68,7 @@ fn main() -> image::ImageResult<()> {
 
     Ok(())
 }
-fn color_ray<O: Object>(r: &Ray, world: Arc<O>, depth: u32) -> Color {
+fn color_ray<O: Object>(r: &Ray, world: &O, depth: u32) -> Color {
     if depth == 0 {
         return Vec3::new(0.0, 0.0, 0.0);
     }
